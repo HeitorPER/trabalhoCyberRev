@@ -1,0 +1,99 @@
+
+=== E1 CLI
+HYPOTHESIS: argc!=4 -> usage; 'decode' only prints an upsell; files are opened before the sub-command is checked (0x10f0..0x119c)
+  no args: rc=1 out='Usage: /work/inputs/png2 [encode | decode] INFILE OUTFILE'
+  decode: rc=1 out='Please buy PNG 2.0 Pro to enable this functionality...' out-file-created=True
+  bad subcmd: rc=1 out='Usage: /work/inputs/png2 [encode | decode] INFILE OUTFILE'
+  missing input: rc=1 out='Could not open /tmp/tmpuft5wiqg/missing'
+RESULT: CONFIRMED - see outputs above
+
+=== E2 PPM variants
+HYPOTHESIS: only P3, maxval 255, square 2^n <=128, no comments; P6/P2 rejected
+  P3 reference                 rc=0 msg='' out=120 bytes
+  P3 all on one line           rc=0 msg='' out=120 bytes
+  P3 extra blank lines/tabs    rc=0 msg='' out=120 bytes
+  P6 binary                    rc=1 msg='Only P3 PPM files (with no comments) are supported at the moment as the input.' out=None
+  P2 grey                      rc=1 msg='Only P3 PPM files (with no comments) are supported at the moment as the input.' out=None
+  comment after magic          rc=1 msg='Only 2^n by 2^n size pictures are supported at this time.' out=None
+  maxval 65535                 rc=1 msg='This file is not supported.' out=None
+  maxval 15                    rc=1 msg='This file is not supported.' out=None
+  4x8 non-square               rc=1 msg='Only 2^n by 2^n size pictures are supported at this time.' out=None
+  3x3 not 2^n                  rc=1 msg='Only 2^n by 2^n size pictures are supported at this time.' out=None
+  0x0                          rc=1 msg='Only 2^n by 2^n size pictures are supported at this time.' out=None
+  128x128 limit                rc=0 msg='' out=360 bytes
+  256x256 over limit           rc=1 msg='Why would you want to process such a large picture?' out=None
+  P3x magic suffix             rc=0 msg='' out=120 bytes
+RESULT: CONFIRMED - whitespace layout irrelevant (fscanf); everything else as listed
+
+=== E3 determinism
+HYPOTHESIS: no randomness: same input -> identical output across runs
+RESULT: CONFIRMED - 5 runs -> 1 distinct sha256: {'cad1d70aacd47f5b3a3ebabf9b75c4c7643e2f0c12617f96a635044ea499c9cf'}
+
+=== E4 container 1x1
+HYPOTHESIS: PNG signature, IHDR(13: w,h BE, 08 02 00 C0 DE), one IDAT (zlib), IEND; CRC-32/IEEE over type+data
+  hex: 89 50 4e 47 0d 0a 1a 0a 00 00 00 0d 49 48 44 52 00 00 00 01 00 00 00 01 08 02 00 c0 de 3a e6 7b 43 00 00 00 0c 49 44 41 54 78 9c 7b 20 a8 64 0c 00 04 2e 01 47 0a 2e c3 21 00 00 00 00 49 45 4e 44 ae 42 60 82
+  chunks: [(b'IHDR', 13), (b'IDAT', 12), (b'IEND', 0)] IHDR: 00 00 00 01 00 00 00 01 08 02 00 c0 de
+  IDAT starts 789c (zlib CMF/FLG 78 9c = deflate, 32K window, default level)
+  inflated: e0 11 22 33
+RESULT: CONFIRMED - 1 filter byte + 3 residual bytes; all filters equal X when neighbours are 0, tie -> first filter (0xE0)
+
+=== E5 raw stream size
+HYPOTHESIS: inflated size = n*(1+3n) for every n=1..128
+  n=  1: 4 bytes, row filter bytes [224]
+  n=  2: 14 bytes, row filter bytes [1, 2]
+  n=  4: 52 bytes, row filter bytes [1, 2, 224, 231]
+  n=  8: 200 bytes, row filter bytes [0, 225, 227, 228, 229, 231]
+  n= 16: 784 bytes, row filter bytes [0, 2, 224, 226, 227, 229, 230, 231]
+  n= 32: 3104 bytes, row filter bytes [0, 1, 2, 224, 225, 226, 227, 228, 229, 230, 231]
+  n= 64: 12352 bytes, row filter bytes [0, 1, 2, 224, 225, 226, 227, 228, 229, 230, 231]
+  n=128: 49280 bytes, row filter bytes [0, 1, 2, 224, 225, 226, 227, 228, 229, 230, 231]
+RESULT: CONFIRMED - rows of 3n residual bytes, each preceded by a filter byte
+
+=== E6 permutation (unique colours)
+HYPOTHESIS: pixel d of the stream is image[y][x] with (x,y)=Hilbert d2xy(n,d)
+  n=  2: decode(encode)==img: True
+  n=  4: decode(encode)==img: True
+  n=  8: decode(encode)==img: True
+  n= 16: decode(encode)==img: True
+  n= 32: decode(encode)==img: True
+  n= 64: decode(encode)==img: True
+  n=128: decode(encode)==img: True
+  stream index d for each (row,col) of an 8x8 image (Hilbert order):
+     0  3  4  5 58 59 60 63
+     1  2  7  6 57 56 61 62
+    14 13  8  9 54 55 50 49
+    15 12 11 10 53 52 51 48
+    16 17 30 31 32 33 46 47
+    19 18 29 28 35 34 45 44
+    20 23 24 27 36 39 40 43
+    21 22 25 26 37 38 41 42
+
+=== E7 permutation (single lit pixel, 8x8)
+HYPOTHESIS: lighting pixel (r,c) makes the first non-zero residual appear at stream position d(r,c)
+RESULT: CONFIRMED - position of the lit pixel in the stream matches the Hilbert index for all 64 positions
+
+=== E8 orientation
+HYPOTHESIS: d=1 goes to (row 1, col 0) for n=2 i.e. curve starts down the first column
+  stream: 01 01 01 01 01 01 01 01 03 03 03 01 01 01
+RESULT: CONFIRMED - values 1,2,3,4 appear in stream order (0,0),(1,0),(1,1),(0,1)
+
+=== E9 filter selection is exactly cost * 1.01^(count-min)
+HYPOTHESIS: python re-implementation reproduces the inflated stream byte for byte
+  filter bytes observed: {'0x00': 33, '0x01': 649, '0x02': 81, '0xe0': 100, '0xe1': 572, '0xe2': 114, '0xe3': 174, '0xe4': 106, '0xe5': 25, '0xe6': 44, '0xe7': 142}
+RESULT: CONFIRMED - all generated images reproduced exactly
+
+=== E10 naive size patch
+HYPOTHESIS: raising only the 128 limit is NOT enough: 8/16-bit types break n>=256
+  naive 256: rc=0, inflated 196864 bytes (buffer size n*(3n+1) = 196864), non-zero bytes: 256, first 8: e0 e0 e0 e0 e0 e0 e0 e0
+  decoded == input: False; decoded non-zero pixels: 214
+  -> uint8 width 256 == 0: filter_row writes no residuals and select_filter advances only 1 byte per
+     row, so the first 256 bytes are filter bytes and the rest is untouched malloc memory
+RESULT: CONFIRMED - the naive patch produces a broken file; the widened patch is required
+
+=== E11 widened patch
+HYPOTHESIS: with all truncations widened the encoder agrees with the algorithm at 256..1024
+  n=128: decode==img True; stream==ref True
+  n=256: decode==img True; stream==ref True
+  n=512: decode==img True; stream==ref True
+  n=1024: decode==img True; stream==ref True
+RESULT: CONFIRMED - patched copy byte-identical to original for 128x128
